@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="tr">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Python Touchpad Controller</title>
+    <!-- <link rel="stylesheet" href="styles.css"> -->
+    <style>
+        :root {
+            --touchpad-bg: #1a1a1a;
+            --status-color: #4CAF50;
+            --status-error: #f44336;
+            --text-color: #ffffff;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+            background-color: #121212;
+            touch-action: none;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+
+        #touchpad {
+            width: 100vw;
+            height: 80vh;
+            background: var(--touchpad-bg);
+            border-radius: 2px;
+            box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.2);
+            position: relative;
+        }
+
+        #status {
+            height: 20vh;
+            padding: 0 20px;
+            color: var(--status-color);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2rem;
+            text-align: center;
+            transition: color 0.3s ease;
+        }
+
+        .status-error {
+            color: var(--status-error) !important;
+        }
+
+        /* Visual feedback for touches */
+        .touch-indicator {
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background-color: rgba(255, 255, 255, 0.3);
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+            0% {
+                transform: translate(-50%, -50%) scale(1);
+                opacity: 0.7;
+            }
+
+            70% {
+                transform: translate(-50%, -50%) scale(1.5);
+                opacity: 0.3;
+            }
+
+            100% {
+                transform: translate(-50%, -50%) scale(1);
+                opacity: 0.7;
+            }
+        }
+
+        /* Orientation-specific adjustments */
+        @media (orientation: landscape) {
+            #touchpad {
+                height: 100vh;
+                width: 80vw;
+                float: left;
+            }
+
+            #status {
+                height: 100vh;
+                width: 20vw;
+                float: right;
+                writing-mode: vertical-rl;
+                text-orientation: mixed;
+                transform: rotate(180deg);
+            }
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.1/socket.io.min.js"></script>
+</head>
+
+<body>
+    <div id="touchpad"></div>
+    <div id="status">Bağlanıyor...</div>
+    <script>// Connection and authentication state
+        // Connection and authentication state (unchanged)
+        const state = {
+            token: null,
+            isDragging: false,
+            lastPos: { x: 0, y: 0 },
+            touchStartTime: 0,
+            pointers: new Map(),
+            gestureTimeout: null,
+            serverAddress: window.location.hostname + ':2375',
+            socket: null,
+            connectionRetries: 0,
+            maxRetries: 5,
+            retryDelay: 2000,
+            debug: false
+        };
+
+        // DOM Elements cache (unchanged)
+        const elements = {
+            touchpad: document.getElementById('touchpad'),
+            status: document.getElementById('status'),
+            debugPanel: null
+        };
+
+        // Debug logging (unchanged)
+        function log(...args) {
+            if (state.debug) {
+                console.log(...args);
+                updateDebugPanel(args.join(' '));
+            }
+        }
+
+        // Create and show debug panel if needed (unchanged)
+        function initDebugPanel() {
+            if (state.debug && !elements.debugPanel) {
+                elements.debugPanel = document.createElement('div');
+                elements.debugPanel.id = 'debugPanel';
+                elements.debugPanel.style.cssText = `
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 100px;
+            background: rgba(0,0,0,0.8);
+            color: #0f0;
+            font-family: monospace;
+            font-size: 12px;
+            padding: 5px;
+            overflow-y: auto;
+            z-index: 1000;
+        `;
+                document.body.appendChild(elements.debugPanel);
+            }
+        }
+
+        // Update debug panel with new information (unchanged)
+        function updateDebugPanel(message) {
+            if (elements.debugPanel) {
+                const entry = document.createElement('div');
+                entry.textContent = `[${new Date().toISOString().substr(11, 8)}] ${message}`;
+                elements.debugPanel.appendChild(entry);
+                elements.debugPanel.scrollTop = elements.debugPanel.scrollHeight;
+                while (elements.debugPanel.childElementCount > 50) {
+                    elements.debugPanel.removeChild(elements.debugPanel.firstChild);
+                }
+            }
+        }
+
+        // Update status with internationalization support (unchanged)
+        function updateStatus(message, isError = false) {
+            elements.status.textContent = message;
+            elements.status.className = isError ? 'status-error' : '';
+            log(`Status: ${message}`);
+        }
+
+        // Initialize WebSocket connection with token-based auth and reconnection (unchanged)
+        function initSocket() {
+            if (!state.token) {
+                log('No token available for socket connection');
+                return;
+            }
+            try {
+                if (state.socket) {
+                    state.socket.disconnect();
+                    state.socket = null;
+                }
+                state.socket = io(`http://${state.serverAddress}`, {
+                    query: { token: state.token },
+                    reconnection: true,
+                    reconnectionAttempts: state.maxRetries,
+                    reconnectionDelay: state.retryDelay
+                });
+                state.socket.on('connect', () => {
+                    updateStatus('WebSocket bağlandı ✔️');
+                    state.connectionRetries = 0;
+                });
+                state.socket.on('connect_error', (error) => {
+                    log(`Socket connection error: ${error.message}`);
+                    state.connectionRetries++;
+                    if (state.connectionRetries >= state.maxRetries) {
+                        updateStatus('Bağlantı hatası: Yeniden kimlik doğrulama yapılıyor', true);
+                        setTimeout(authenticate, state.retryDelay);
+                    } else {
+                        updateStatus(`Bağlantı hatası: Yeniden deneniyor (${state.connectionRetries}/${state.maxRetries})`, true);
+                    }
+                });
+                state.socket.on('disconnect', () => {
+                    updateStatus('WebSocket bağlantısı kesildi ❌', true);
+                });
+                state.socket.on('update_position', (data) => {
+                    log(`Position updated: ${data.x}, ${data.y}`);
+                });
+                state.socket.on('connection_success', (data) => {
+                    log('Socket authenticated successfully');
+                });
+            } catch (error) {
+                log(`WebSocket initialization error: ${error.message}`);
+                updateStatus(`WebSocket bağlantı hatası: ${error.message}`, true);
+            }
+        }
+
+        // Get authentication token with retry and exponential backoff (unchanged)
+        async function authenticate() {
+            const maxRetries = 5;
+            let retryCount = 0;
+            let delay = 1000;
+            while (retryCount < maxRetries) {
+                try {
+                    updateStatus(retryCount > 0 ? `Yeniden kimlik doğrulanıyor (${retryCount + 1}/${maxRetries})...` : 'Kimlik doğrulanıyor...');
+                    const response = await fetch(`http://${state.serverAddress}/auth`, {
+                        method: 'GET',
+                        headers: { 'Cache-Control': 'no-cache' }
+                    });
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+                    const data = await response.json();
+                    if (!data.token) {
+                        throw new Error('Token not found in response');
+                    }
+                    state.token = data.token;
+                    updateStatus('Kimlik doğrulama başarılı ✔️');
+                    try {
+                        sessionStorage.setItem('touchpad_token', state.token);
+                    } catch (e) {
+                        log('SessionStorage not available');
+                    }
+                    initSocket();
+                    return;
+                } catch (error) {
+                    log(`Authentication error: ${error.message}`);
+                    retryCount++;
+                    if (retryCount >= maxRetries) {
+                        updateStatus(`Kimlik doğrulama başarısız: ${error.message}. Yenilemeyi deneyin.`, true);
+                        break;
+                    }
+                    updateStatus(`Kimlik doğrulama hatası, yeniden deneniyor ${retryCount}/${maxRetries}...`, true);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                    delay *= 1.5;
+                }
+            }
+        }
+
+        // Send API request with authentication and retry logic (modified to support click type)
+        async function sendApiRequest(endpoint, method = 'POST', data = null) {
+            if (!state.token) {
+                log('Token yok, önce kimlik doğrulama yapın');
+                await authenticate();
+                if (!state.token) return null;
+            }
+            try {
+                const options = {
+                    method,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${state.token}`
+                    }
+                };
+                if (data) options.body = JSON.stringify(data);
+                const response = await fetch(`http://${state.serverAddress}${endpoint}`, options);
+                if (response.status === 401) {
+                    log('Token expired, re-authenticating');
+                    await authenticate();
+                    if (state.token) {
+                        return sendApiRequest(endpoint, method, data);
+                    }
+                    return null;
+                }
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                return await response.json();
+            } catch (error) {
+                log(`API request error (${endpoint}): ${error.message}`);
+                return null;
+            }
+        }
+
+        // Send mouse move event with throttling (unchanged)
+        const sendMoveEvent = (() => {
+            let lastSentTime = 0;
+            const minInterval = 16; // ~60fps
+            return function (x, y) {
+                const now = Date.now();
+                if (now - lastSentTime < minInterval) return;
+                lastSentTime = now;
+                const phoneX = Math.floor(x * 1080);
+                const phoneY = Math.floor(y * 2340);
+                if (state.socket && state.socket.connected) {
+                    state.socket.emit('move', { x: phoneX, y: phoneY });
+                } else {
+                    sendApiRequest('/move', 'POST', { x: phoneX, y: phoneY });
+                }
+            };
+        })();
+
+        // Send mouse click event with debounce (modified to support left/right click)
+        const sendClickEvent = (() => {
+            let lastClickTime = 0;
+            const debounceTime = 300; // ms
+            return function (button = 'left') {  // Default to left click
+                const now = Date.now();
+                if (now - lastClickTime < debounceTime) return;
+                lastClickTime = now;
+                sendApiRequest('/click', 'POST', { button });  // Send button type to server
+            };
+        })();
+
+        // Send gesture event with debounce (unchanged)
+        const sendGesture = (() => {
+            const recentGestures = new Map();
+            const debounceTime = 500; // ms
+            return function (gestureType) {
+                const now = Date.now();
+                const lastTime = recentGestures.get(gestureType) || 0;
+                if (now - lastTime < debounceTime) return;
+                recentGestures.set(gestureType, now);
+                for (const [gesture, time] of recentGestures.entries()) {
+                    if (now - time > 5000) recentGestures.delete(gesture);
+                }
+                log(`Sending gesture: ${gestureType}`);
+                sendApiRequest('/gesture', 'POST', { type: gestureType });
+            };
+        })();
+
+        // Detect pinch gesture with improved accuracy (unchanged)
+        function detectPinch(touches) {
+            if (touches.length !== 2) return null;
+            const touch1 = touches[0];
+            const touch2 = touches[1];
+            const p1 = state.pointers.get(touch1.identifier);
+            const p2 = state.pointers.get(touch2.identifier);
+            if (!p1 || !p2) return null;
+            const startDistance = Math.hypot(p1.startX - p2.startX, p1.startY - p2.startY);
+            const currentDistance = Math.hypot(touch1.clientX - touch2.clientX, touch1.clientY - touch2.clientY);
+            const diff = currentDistance - startDistance;
+            const threshold = Math.max(20, startDistance * 0.15);
+            if (Math.abs(diff) > threshold) {
+                return diff > 0 ? 'pinch_out' : 'pinch_in';
+            }
+            return null;
+        }
+
+        // Create visual feedback for touches (unchanged)
+        function createTouchIndicator(x, y) {
+            if (!state.debug) return;
+            const indicator = document.createElement('div');
+            indicator.className = 'touch-indicator';
+            indicator.style.left = `${x}px`;
+            indicator.style.top = `${y}px`;
+            document.body.appendChild(indicator);
+            setTimeout(() => {
+                if (indicator.parentNode) {
+                    indicator.parentNode.removeChild(indicator);
+                }
+            }, 1000);
+        }
+
+        // Touch event handlers with improved gesture detection (modified for clicks)
+        function handleTouchStart(e) {
+            e.preventDefault();
+            state.isDragging = true;
+            state.touchStartTime = Date.now();
+            Array.from(e.touches).forEach(touch => {
+                state.pointers.set(touch.identifier, {
+                    startX: touch.clientX,
+                    startY: touch.clientY,
+                    lastX: touch.clientX,
+                    lastY: touch.clientY,
+                    lastTime: Date.now(),
+                    moved: false
+                });
+                if (state.debug) {
+                    createTouchIndicator(touch.clientX, touch.clientY);
+                }
+            });
+            log(`Touch start: ${e.touches.length} touches`);
+        }
+
+        function handleTouchMove(e) {
+            e.preventDefault();
+            if (!state.isDragging) return;
+            const rect = elements.touchpad.getBoundingClientRect();
+            const now = Date.now();
+
+            if (e.touches.length >= 2) {
+                const pinchType = detectPinch(e.touches);
+                if (pinchType) {
+                    sendGesture(pinchType);
+                    return;
+                }
+                if (e.touches.length === 2) {
+                    const touch = e.touches[0];
+                    const prevTouch = state.pointers.get(touch.identifier);
+                    if (prevTouch) {
+                        const deltaY = touch.clientY - prevTouch.lastY;
+                        const deltaTime = now - prevTouch.lastTime;
+                        if (Math.abs(deltaY) > 10 && deltaTime < 200) {
+                            sendGesture(deltaY < 0 ? 'two_finger_scroll_up' : 'two_finger_scroll_down');
+                        }
+                        state.pointers.set(touch.identifier, {
+                            ...prevTouch,
+                            lastX: touch.clientX,
+                            lastY: touch.clientY,
+                            lastTime: now,
+                            moved: true
+                        });
+                    }
+                    return;
+                }
+                if (e.touches.length === 3) {
+                    const touch = e.touches[0];
+                    const prevTouch = state.pointers.get(touch.identifier);
+                    if (prevTouch) {
+                        const deltaX = touch.clientX - prevTouch.startX;
+                        const deltaTime = now - state.touchStartTime;
+                        if (Math.abs(deltaX) > 50 && deltaTime < 300) {
+                            sendGesture(deltaX > 0 ? 'three_finger_swipe_right' : 'three_finger_swipe_left');
+                            Array.from(e.touches).forEach(t => {
+                                const data = state.pointers.get(t.identifier);
+                                if (data) {
+                                    state.pointers.set(t.identifier, {
+                                        ...data,
+                                        startX: t.clientX,
+                                        startY: t.clientY,
+                                        lastTime: now
+                                    });
+                                }
+                            });
+                        }
+                    }
+                    return;
+                }
+            }
+
+            if (e.touches.length === 1) {
+                const touch = e.touches[0];
+                const pointer = state.pointers.get(touch.identifier);
+                if (pointer) {
+                    const moved = Math.hypot(touch.clientX - pointer.startX, touch.clientY - pointer.startY) > 5;
+                    state.pointers.set(touch.identifier, {
+                        ...pointer,
+                        moved,
+                        lastX: touch.clientX,
+                        lastY: touch.clientY,
+                        lastTime: now
+                    });
+                }
+                const x = (touch.clientX - rect.left) / rect.width;
+                const y = (touch.clientY - rect.top) / rect.height;
+                sendMoveEvent(x, y);
+            }
+        }
+
+        function handleTouchEnd(e) {
+            e.preventDefault();
+            if (!state.isDragging) return;
+            state.isDragging = false;
+
+            const touchCount = state.pointers.size; // Number of touches before this event ends
+            const touchDuration = Date.now() - state.touchStartTime;
+
+            // Handle clicks based on the number of fingers involved
+            if (touchDuration < 300 && e.changedTouches.length > 0) { // Short tap detection
+                const lastTouch = e.changedTouches[0];
+                const pointer = state.pointers.get(lastTouch.identifier);
+
+                if (pointer && !pointer.moved) {
+                    if (touchCount === 1) {
+                        // Single finger tap = Left click
+                        log('Single tap detected - Left click');
+                        sendClickEvent('left');
+                    } else if (touchCount === 2) {
+                        // Two finger tap = Right click
+                        log('Two finger tap detected - Right click');
+                        sendClickEvent('right');
+                    }
+                }
+            }
+
+            // Clear pointers for ended touches
+            Array.from(e.changedTouches).forEach(touch => {
+                state.pointers.delete(touch.identifier);
+            });
+        }
+
+        // Restore token from sessionStorage if available (unchanged)
+        function restoreSession() {
+            try {
+                const savedToken = sessionStorage.getItem('touchpad_token');
+                if (savedToken) {
+                    state.token = savedToken;
+                    log('Restored token from session');
+                    return true;
+                }
+            } catch (e) {
+                log('Session restoration failed');
+            }
+            return false;
+        }
+
+        // Initialize application (unchanged)
+        function init() {
+            const urlParams = new URLSearchParams(window.location.search);
+            state.debug = urlParams.has('debug');
+            if (state.debug) {
+                initDebugPanel();
+                log('Debug mode enabled');
+            }
+            const serverParam = urlParams.get('server');
+            if (serverParam) {
+                state.serverAddress = serverParam;
+                log(`Using server address from URL: ${state.serverAddress}`);
+            }
+            elements.touchpad.addEventListener('touchstart', handleTouchStart, { passive: false });
+            elements.touchpad.addEventListener('touchmove', handleTouchMove, { passive: false });
+            elements.touchpad.addEventListener('touchend', handleTouchEnd);
+            if (restoreSession()) {
+                initSocket();
+            } else {
+                authenticate();
+            }
+            document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState === 'visible') {
+                    log('Page became visible, checking connection');
+                    if (!state.socket || !state.socket.connected) {
+                        if (state.token) {
+                            initSocket();
+                        } else {
+                            authenticate();
+                        }
+                    }
+                }
+            });
+        }
+
+        // Initialize on DOM content loaded (unchanged)
+        document.addEventListener('DOMContentLoaded', init);
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,28 @@
+# Core web framework and server
+quart==0.19.4
+hypercorn==0.17.3
+
+# CORS and rate limiting for Quart
+quart-cors==0.7.0
+quart-rate-limiter==0.7.0
+
+# WebSocket support
+python-socketio==5.11.2
+
+# Mouse and keyboard automation
+pyautogui==0.9.54
+
+# JWT for authentication
+pyjwt==2.8.0
+
+# Numerical computations (used in smooth_move)
+numpy==1.26.4
+
+# Standard library dependencies (no need to install, included for reference)
+asyncio  # Built-in
+logging  # Built-in
+os  # Built-in
+time  # Built-in
+pathlib  # Built-in
+functools  # Built-in
+typing  # Built-in
